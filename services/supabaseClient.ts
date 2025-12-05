@@ -28,8 +28,8 @@ console.log(`[Supabase] Init: ${isConfigured ? 'OK' : 'MISSING CONFIG'} | URL: $
 export const supabase = isConfigured 
   ? createClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
       auth: {
-        persistSession: true,
-        autoRefreshToken: true,
+        persistSession: false, // IMPORTANTE: Desactivado para evitar bloqueos de "Tracking Prevention"
+        autoRefreshToken: false,
         detectSessionInUrl: false
       }
     }) 
