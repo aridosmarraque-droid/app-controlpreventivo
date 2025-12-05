@@ -1,0 +1,309 @@
+import React, { useState, useMemo, useEffect } from 'react';
+import { Site, InspectionLog, Answer } from '../types';
+import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard } from 'lucide-react';
+import { toast } from 'react-hot-toast';
+
+interface Props {
+  site: Site;
+  onComplete: (log: InspectionLog) => void;
+  onCancel: () => void;
+}
+
+export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }) => {
+  // Flatten points structure to linear steps
+  const steps = useMemo(() => {
+    const list: { areaName: string; areaId: string; point: any; index: number; total: number }[] = [];
+    site.areas.forEach(area => {
+      area.points.forEach(point => {
+        list.push({ areaName: area.name, areaId: area.id, point, index: list.length, total: 0 });
+      });
+    });
+    return list.map(item => ({ ...item, total: list.length }));
+  }, [site]);
+
+  // Step -1 represents the Inspector Info form
+  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
+  const [answers, setAnswers] = useState<Record<string, Answer>>({});
+  
+  // Inspector Info State
+  const [inspectorInfo, setInspectorInfo] = useState({
+    name: '',
+    dni: '',
+    email: ''
+  });
+
+  // Local state for the current step
+  const [selectedStatus, setSelectedStatus] = useState<boolean | null>(null);
+  const [tempPhoto, setTempPhoto] = useState<string | null>(null);
+
+  const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null;
+
+  // Reset local state when step changes
+  useEffect(() => {
+    setSelectedStatus(null);
+    setTempPhoto(null);
+  }, [currentStepIndex]);
+
+  const handleStart = () => {
+    if (!inspectorInfo.name || !inspectorInfo.dni || !inspectorInfo.email) {
+      toast.error('Por favor completa todos los datos del inspector');
+      return;
+    }
+    setCurrentStepIndex(0);
+  };
+
+  const handleNext = () => {
+    if (!currentStep) return;
+
+    if (selectedStatus === null) {
+      toast.error('Debes seleccionar SI o NO');
+      return;
+    }
+
+    // Validation: Photo required check
+    if (currentStep.point.requiresPhoto && !tempPhoto) {
+      toast.error('Es obligatorio tomar una foto');
+      return;
+    }
+
+    const answer: Answer = {
+      pointId: currentStep.point.id,
+      pointName: currentStep.point.name,
+      question: currentStep.point.question,
+      areaName: currentStep.areaName,
+      isOk: selectedStatus,
+      photoUrl: tempPhoto || undefined,
+      timestamp: Date.now()
+    };
+
+    const newAnswers = { ...answers, [currentStep.point.id]: answer };
+    setAnswers(newAnswers);
+
+    if (currentStepIndex < steps.length - 1) {
+      setCurrentStepIndex(prev => prev + 1);
+    } else {
+      // Finish
+      const log: InspectionLog = {
+        id: `insp-${Date.now()}`,
+        siteId: site.id,
+        siteName: site.name,
+        date: new Date().toISOString(),
+        inspectorName: inspectorInfo.name,
+        inspectorDni: inspectorInfo.dni,
+        inspectorEmail: inspectorInfo.email,
+        answers: Object.values(newAnswers),
+        status: 'completed'
+      };
+      onComplete(log);
+    }
+  };
+
+  const handlePhotoUpload = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (file) {
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        setTempPhoto(reader.result as string);
+      };
+      reader.readAsDataURL(file);
+    }
+  };
+
+  if (steps.length === 0) {
+    return (
+       <div className="text-center p-8">
+         <p>Esta instalación no tiene puntos de inspección.</p>
+         <button onClick={onCancel} className="mt-4 text-blue-500">Volver</button>
+       </div>
+    );
+  }
+
+  // --- Login Form View ---
+  if (currentStepIndex === -1) {
+    return (
+      <div className="space-y-6 animate-in slide-in-from-right">
+        <div className="bg-white p-6 rounded-2xl shadow-lg border border-slate-100">
+           <h2 className="text-xl font-bold text-slate-800 mb-6 flex items-center gap-2">
+             <User className="w-6 h-6 text-safety-600" />
+             Datos del Inspector
+           </h2>
+           
+           <div className="space-y-4">
+             <div>
+               <label className="block text-sm font-bold text-slate-500 mb-1">Nombre Completo</label>
+               <div className="relative">
+                 <User className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
+                 <input 
+                   type="text" 
+                   value={inspectorInfo.name}
+                   onChange={e => setInspectorInfo({...inspectorInfo, name: e.target.value})}
+                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
+                   placeholder="Ej. Juan Pérez"
+                 />
+               </div>
+             </div>
+
+             <div>
+               <label className="block text-sm font-bold text-slate-500 mb-1">DNI / Identificación</label>
+               <div className="relative">
+                 <CreditCard className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
+                 <input 
+                   type="text" 
+                   value={inspectorInfo.dni}
+                   onChange={e => setInspectorInfo({...inspectorInfo, dni: e.target.value})}
+                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
+                   placeholder="Ej. 12345678X"
+                 />
+               </div>
+             </div>
+
+             <div>
+               <label className="block text-sm font-bold text-slate-500 mb-1">Correo Electrónico</label>
+               <div className="relative">
+                 <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
+                 <input 
+                   type="email" 
+                   value={inspectorInfo.email}
+                   onChange={e => setInspectorInfo({...inspectorInfo, email: e.target.value})}
+                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
+                   placeholder="Ej. inspector@empresa.com"
+                 />
+               </div>
+             </div>
+           </div>
+
+           <div className="mt-8 flex gap-3">
+             <button onClick={onCancel} className="flex-1 py-3 text-slate-500 font-bold">Cancelar</button>
+             <button 
+               onClick={handleStart}
+               className="flex-[2] py-3 bg-safety-600 text-white rounded-xl font-bold shadow-lg shadow-safety-200 hover:bg-safety-700 active:scale-[0.98] transition-all"
+             >
+               Comenzar Inspección
+             </button>
+           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // --- Inspection Steps View ---
+  const progress = ((currentStepIndex + 1) / steps.length) * 100;
+
+  return (
+    <div className="flex flex-col h-[calc(100vh-6rem)] relative">
+      {/* Header Info */}
+      <div className="mb-4">
+        <div className="flex justify-between text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+          <span>{currentStep?.areaName}</span>
+          <span>Paso {currentStepIndex + 1}/{steps.length}</span>
+        </div>
+        <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
+          <div 
+            className="h-full bg-safety-500 transition-all duration-300" 
+            style={{ width: `${progress}%` }}
+          />
+        </div>
+      </div>
+
+      {/* Main Card */}
+      <div className="flex-1 overflow-y-auto pb-20 no-scrollbar">
+        <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-8">
+          
+          {/* 1. Question */}
+          <div>
+            <h3 className="text-sm font-bold text-slate-400 mb-2 uppercase">{currentStep?.point.name}</h3>
+            <h2 className="text-xl font-bold text-slate-800 leading-tight">
+              {currentStep?.point.question}
+            </h2>
+          </div>
+
+          {/* 2. Answer Selection */}
+          <div className="grid grid-cols-2 gap-4">
+            <button 
+              onClick={() => setSelectedStatus(false)}
+              className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
+                selectedStatus === false 
+                  ? 'border-red-500 bg-red-50 text-red-600' 
+                  : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'
+              }`}
+            >
+              <div className={`p-2 rounded-full ${selectedStatus === false ? 'bg-red-100' : 'bg-slate-100'}`}>
+                <X className="w-6 h-6" />
+              </div>
+              <span className="font-bold">NO / Mal</span>
+            </button>
+
+            <button 
+              onClick={() => setSelectedStatus(true)}
+              className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
+                selectedStatus === true 
+                  ? 'border-green-500 bg-green-50 text-green-600' 
+                  : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'
+              }`}
+            >
+              <div className={`p-2 rounded-full ${selectedStatus === true ? 'bg-green-100' : 'bg-slate-100'}`}>
+                <Check className="w-6 h-6" />
+              </div>
+              <span className="font-bold">SI / Bien</span>
+            </button>
+          </div>
+
+          {/* 3. Photo Section (Conditional) */}
+          {currentStep?.point.requiresPhoto ? (
+            <div className="animate-in fade-in slide-in-from-bottom-2">
+              <label className="block text-sm font-bold text-slate-700 mb-2">
+                Foto Requerida
+              </label>
+              <div className={`border-2 border-dashed rounded-xl overflow-hidden transition-colors ${tempPhoto ? 'border-safety-500' : 'border-slate-300 bg-slate-50'}`}>
+                {tempPhoto ? (
+                  <div className="relative h-56 bg-black">
+                    <img src={tempPhoto} alt="Evidence" className="w-full h-full object-contain" />
+                    <button 
+                      onClick={() => setTempPhoto(null)} 
+                      className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full backdrop-blur-md"
+                    >
+                      <RotateCcw className="w-5 h-5" />
+                    </button>
+                  </div>
+                ) : (
+                  <label className="flex flex-col items-center justify-center h-48 cursor-pointer active:bg-slate-100">
+                    <Camera className="w-10 h-10 text-slate-400 mb-3" />
+                    <p className="text-sm font-medium text-slate-600 text-center px-4">
+                      {currentStep.point.photoInstruction || 'Toma una foto de evidencia'}
+                    </p>
+                    <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoUpload} />
+                  </label>
+                )}
+              </div>
+            </div>
+          ) : null}
+
+        </div>
+      </div>
+
+      {/* Footer Navigation */}
+      <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 z-10 md:absolute md:rounded-b-2xl">
+        <div className="max-w-3xl mx-auto flex gap-3">
+          <button 
+            onClick={onCancel}
+            className="px-4 py-3 rounded-xl border border-slate-200 text-slate-500 font-bold"
+          >
+            Cancelar
+          </button>
+          <button 
+            onClick={handleNext}
+            disabled={selectedStatus === null}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-bold shadow-lg transition-all ${
+              selectedStatus !== null 
+                ? 'bg-safety-600 text-white shadow-safety-200 active:scale-[0.98]' 
+                : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
+            }`}
+          >
+            {currentStepIndex === steps.length - 1 ? 'Finalizar' : 'Siguiente'}
+            <ChevronRight className="w-5 h-5" />
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+};

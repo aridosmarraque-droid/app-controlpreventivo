@@ -1,0 +1,7 @@
+{
+  "name": "ControlesPreventivos",
+  "description": "Mobile app for industrial safety inspections and preventive controls.",
+  "requestFramePermissions": [
+    "camera"
+  ]
+}
