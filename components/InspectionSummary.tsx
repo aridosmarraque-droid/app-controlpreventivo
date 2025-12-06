@@ -1,7 +1,9 @@
 import React, { useRef, useState } from 'react';
 import { InspectionLog } from '../types';
-import { CheckCircle, AlertTriangle, Send, FileDown, ArrowLeft, Home } from 'lucide-react';
+import { CheckCircle, AlertTriangle, CloudUpload, FileDown, Home } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { storageService } from '../services/storageService';
+import { checkSupabaseConfig } from '../services/supabaseClient';
 
 // Extend Window interface for external libraries loaded via script tags
 declare global {
@@ -18,35 +20,29 @@ interface Props {
 }
 
 export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) => {
-  const [isGenerating, setIsGenerating] = useState(false);
+  const [isProcessing, setIsProcessing] = useState(false);
   const reportRef = useRef<HTMLDivElement>(null);
 
   const failedItems = log.answers.filter(a => !a.isOk);
   const passedItems = log.answers.filter(a => a.isOk);
 
-  const handleGeneratePDF = async () => {
+  const generatePdfBlob = async (): Promise<Blob | null> => {
     if (!reportRef.current || !window.jspdf || !window.html2canvas) {
-      toast.error('Librerías PDF no cargadas. Intente recargar.');
-      return;
+      toast.error('Librerías PDF no cargadas.');
+      return null;
     }
-
-    setIsGenerating(true);
-    const toastId = toast.loading('Generando informe PDF...');
 
     try {
       const { jsPDF } = window.jspdf;
       
-      // We render the report div to canvas
-      // Note: Elements must be visible in DOM for html2canvas to work best, 
-      // even if off-screen.
       const canvas = await window.html2canvas(reportRef.current, {
-        scale: 2, // Better quality
+        scale: 2,
         useCORS: true,
         logging: false,
-        windowWidth: 1000 // Force width to desktop size for template
+        windowWidth: 1000
       });
 
-      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const imgData = canvas.toDataURL('image/jpeg', 0.90);
       const pdf = new jsPDF('p', 'mm', 'a4');
       const pdfWidth = pdf.internal.pageSize.getWidth();
       const pdfHeight = pdf.internal.pageSize.getHeight();
@@ -67,26 +63,55 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
         heightLeft -= pdfHeight;
       }
 
-      const filename = `Inspeccion_${log.siteName.replace(/\s+/g, '_')}_${new Date().toISOString().split('T')[0]}.pdf`;
-      pdf.save(filename);
-
-      toast.success('Informe descargado', { id: toastId });
-      
-      // Trigger Email
-      setTimeout(() => {
-        const subject = encodeURIComponent(`Reporte de Inspección - ${log.siteName} - ${new Date(log.date).toLocaleDateString()}`);
-        const body = encodeURIComponent(`Hola,\n\nAdjunto encontrarás el informe de inspección realizado por ${log.inspectorName}.\n\nPor favor, adjunta el archivo PDF que se acaba de descargar.\n\nAtentamente,\n${log.inspectorName}`);
-        const mailtoLink = `mailto:aridos@marraque.es,${log.inspectorEmail}?subject=${subject}&body=${body}`;
-        window.location.href = mailtoLink;
-      }, 1000);
-      
-      // We don't force exit here, let user choose when to leave
-    } catch (error) {
-      console.error(error);
-      toast.error('Error generando PDF', { id: toastId });
-    } finally {
-      setIsGenerating(false);
+      return pdf.output('blob');
+    } catch (e) {
+      console.error(e);
+      return null;
     }
+  };
+
+  const handleFinishAndUpload = async () => {
+    if (!checkSupabaseConfig()) {
+      toast.error("No hay configuración de nube. Guardando solo local.");
+      onConfirm();
+      return;
+    }
+
+    setIsProcessing(true);
+    const toastId = toast.loading('Generando PDF y Subiendo a la Nube...');
+
+    try {
+      // 1. Generate PDF Blob
+      const blob = await generatePdfBlob();
+      if (!blob) throw new Error("Fallo al generar PDF");
+
+      // 2. Upload to Supabase Storage & Update DB
+      await storageService.uploadInspectionWithPDF(log, blob);
+
+      toast.success('¡Inspección Completada y Subida!', { id: toastId });
+      
+      // 3. Exit
+      setTimeout(onConfirm, 1000);
+
+    } catch (error: any) {
+      console.error(error);
+      toast.error(`Error: ${error.message || 'Fallo en subida'}`, { id: toastId });
+      setIsProcessing(false);
+    }
+  };
+
+  const handleDownloadOnly = async () => {
+     setIsProcessing(true);
+     const blob = await generatePdfBlob();
+     if(blob) {
+         const url = URL.createObjectURL(blob);
+         const a = document.createElement('a');
+         a.href = url;
+         a.download = `Reporte_${log.siteName}.pdf`;
+         a.click();
+         toast.success("PDF Descargado");
+     }
+     setIsProcessing(false);
   };
 
   return (
@@ -97,8 +122,8 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
           <div className="w-20 h-20 bg-green-100 rounded-full flex items-center justify-center mx-auto mb-4">
             <CheckCircle className="w-10 h-10 text-green-600" />
           </div>
-          <h2 className="text-2xl font-bold text-slate-800">Inspección Guardada</h2>
-          <p className="text-slate-500">Los datos se han registrado correctamente.</p>
+          <h2 className="text-2xl font-bold text-slate-800">Inspección Finalizada</h2>
+          <p className="text-slate-500">Revisa los resultados antes de subir.</p>
         </div>
 
         <div className="grid grid-cols-2 gap-4">
@@ -130,23 +155,32 @@ export const InspectionSummary: React.FC<Props> = ({ log, onConfirm, onBack }) =
 
         <div className="fixed bottom-0 left-0 w-full p-4 bg-white border-t border-slate-200 flex flex-col gap-3 pb-8 z-20">
           <button 
-            onClick={handleGeneratePDF}
-            disabled={isGenerating}
-            className="w-full py-3 px-4 rounded-xl bg-slate-800 text-white font-bold shadow-lg hover:bg-slate-700 flex items-center justify-center gap-2 disabled:opacity-70"
+            onClick={handleFinishAndUpload}
+            disabled={isProcessing}
+            className="w-full py-4 px-4 rounded-xl bg-safety-600 text-white font-bold shadow-lg shadow-safety-200 hover:bg-safety-700 flex items-center justify-center gap-2 disabled:opacity-70 disabled:cursor-not-allowed transition-all active:scale-[0.98]"
           >
-            {isGenerating ? 'Generando...' : (
+            {isProcessing ? 'Procesando...' : (
                <>
-                <FileDown className="w-5 h-5" /> Descargar PDF y Enviar
+                <CloudUpload className="w-5 h-5" /> Finalizar y Subir a Nube
                </>
             )}
           </button>
 
-          <button 
-            onClick={onConfirm}
-            className="w-full py-3 px-4 rounded-xl border border-slate-300 text-slate-600 font-bold hover:bg-slate-50 flex items-center justify-center gap-2"
-          >
-            <Home className="w-5 h-5" /> Volver al Inicio
-          </button>
+          <div className="flex gap-2">
+            <button 
+                onClick={handleDownloadOnly}
+                disabled={isProcessing}
+                className="flex-1 py-3 px-4 rounded-xl border border-slate-200 text-slate-600 font-bold hover:bg-slate-50 flex items-center justify-center gap-2 text-sm"
+            >
+                <FileDown className="w-4 h-4" /> Solo Descargar PDF
+            </button>
+            <button 
+                onClick={onConfirm}
+                className="py-3 px-4 rounded-xl border border-slate-200 text-slate-400 font-bold hover:bg-slate-50 hover:text-slate-600"
+            >
+                <Home className="w-5 h-5" />
+            </button>
+          </div>
         </div>
         <div className="h-32" />
       </div>
