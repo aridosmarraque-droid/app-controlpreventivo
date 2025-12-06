@@ -106,14 +106,23 @@ export default function App() {
   };
 
   const handleFinishInspection = async (log: InspectionLog) => {
-    // SAVE IMMEDIATELY: Ensure data is persisted before any other UI interaction
-    await storageService.saveInspection(log);
-    toast.success("Inspección guardada correctamente");
-    updatePendingCount();
-    triggerSync();
+    try {
+        // SAVE IMMEDIATELY: Ensure data is persisted before any other UI interaction
+        await storageService.saveInspection(log);
+        toast.success("Inspección guardada correctamente");
+        updatePendingCount();
+        triggerSync();
 
-    setInspectionResult(log);
-    setCurrentView(AppView.INSPECTION_SUMMARY);
+        setInspectionResult(log);
+        setCurrentView(AppView.INSPECTION_SUMMARY);
+    } catch (error: any) {
+        console.error("Critical Save Error", error);
+        if (error.name === 'QuotaExceededError') {
+             toast.error("¡MEMORIA LLENA! No se pudo guardar en el dispositivo. Intenta borrar historial o sincronizar.");
+        } else {
+             toast.error("Error al guardar inspección");
+        }
+    }
   };
 
   const handleExitSummary = () => {
