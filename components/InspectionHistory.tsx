@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { InspectionLog } from '../types';
 import { storageService } from '../services/storageService';
-import { Calendar, User, FileText, CheckCircle, AlertTriangle, ArrowRight, Cloud, CloudOff } from 'lucide-react';
+import { Calendar, User, FileText, CheckCircle, AlertTriangle, ArrowRight, Cloud, CloudOff, FileDown } from 'lucide-react';
 
 interface Props {
   onViewReport: (log: InspectionLog) => void;
@@ -21,9 +21,8 @@ export const InspectionHistory: React.FC<Props> = ({ onViewReport }) => {
 
     updateLogs();
 
-    // Listen to local storage changes (optional, but good if sync happens in background)
-    const interval = setInterval(updateLogs, 5000); 
-    return () => clearInterval(interval);
+    window.addEventListener('inspections-updated', updateLogs);
+    return () => window.removeEventListener('inspections-updated', updateLogs);
   }, []);
 
   return (
@@ -42,9 +41,8 @@ export const InspectionHistory: React.FC<Props> = ({ onViewReport }) => {
           {logs.map(log => {
              const defects = log.answers.filter(a => !a.isOk).length;
              return (
-               <button 
+               <div 
                  key={log.id}
-                 onClick={() => onViewReport(log)}
                  className="w-full bg-white p-4 rounded-xl border border-slate-200 shadow-sm hover:shadow-md hover:border-safety-400 transition-all text-left group"
                >
                  <div className="flex justify-between items-start mb-2">
@@ -66,11 +64,26 @@ export const InspectionHistory: React.FC<Props> = ({ onViewReport }) => {
                    </div>
                  </div>
                  
-                 <div className="flex items-center justify-between mt-3 pt-3 border-t border-slate-100">
-                    <span className="text-xs font-medium text-slate-400">Ver Informe Detallado</span>
-                    <ArrowRight className="w-4 h-4 text-slate-300 group-hover:text-safety-500" />
+                 <div className="flex items-center gap-2 mt-3 pt-3 border-t border-slate-100">
+                    <button 
+                        onClick={() => onViewReport(log)}
+                        className="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-bold text-slate-500 bg-slate-50 rounded hover:bg-slate-100"
+                    >
+                        Ver Detalle <ArrowRight className="w-3 h-3" />
+                    </button>
+                    
+                    {log.pdfUrl && (
+                        <a 
+                            href={log.pdfUrl}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="flex-1 flex items-center justify-center gap-2 py-2 text-xs font-bold text-white bg-slate-800 rounded hover:bg-slate-700"
+                        >
+                            Ver PDF Nube <FileDown className="w-3 h-3" />
+                        </a>
+                    )}
                  </div>
-               </button>
+               </div>
              );
           })}
         </div>
