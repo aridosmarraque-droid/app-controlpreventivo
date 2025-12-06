@@ -161,6 +161,7 @@ export const AdminDashboard: React.FC = () => {
     }
   };
 
+  // UPDATED SQL TO HANDLE EXISTING TABLES
   const sqlSnippet = `
 -- 1. TABLA DE SITIOS (Configuración)
 create table if not exists sites (
@@ -175,29 +176,35 @@ create table if not exists inspections (
   site_name text,
   inspector_name text,
   date text,
-  pdf_url text, -- Nuevo campo para el PDF
+  -- Si creas la tabla de cero, se crea esta columna. 
+  -- Si ya existe, ver comando ALTER abajo.
+  pdf_url text, 
   data jsonb not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
+-- IMPORTANTE: SI LA TABLA YA EXISTÍA, EJECUTA ESTO PARA AÑADIR LA COLUMNA:
+alter table inspections add column if not exists pdf_url text;
+
 -- 3. STORAGE (Para PDFs)
--- IMPORTANTE: Debes crear un bucket público llamado 'reports' en el menú Storage de Supabase.
--- Si quieres hacerlo por SQL (puede requerir permisos extra):
-insert into storage.buckets (id, name, public) values ('reports', 'reports', true);
+insert into storage.buckets (id, name, public) 
+values ('reports', 'reports', true)
+on conflict (id) do nothing;
 
-create policy "Acceso Publico Reports"
-on storage.objects for select
-using ( bucket_id = 'reports' );
+-- Políticas de Storage (Borra previas para evitar duplicados si re-ejecutas)
+drop policy if exists "Acceso Publico Reports" on storage.objects;
+create policy "Acceso Publico Reports" on storage.objects for select using ( bucket_id = 'reports' );
 
-create policy "Subida Publica Reports"
-on storage.objects for insert
-with check ( bucket_id = 'reports' );
+drop policy if exists "Subida Publica Reports" on storage.objects;
+create policy "Subida Publica Reports" on storage.objects for insert with check ( bucket_id = 'reports' );
 
 -- 4. POLÍTICAS DE SEGURIDAD (Row Level Security)
 alter table sites enable row level security;
+drop policy if exists "Public sites" on sites;
 create policy "Public sites" on sites for all using (true) with check (true);
 
 alter table inspections enable row level security;
+drop policy if exists "Public inspections" on inspections;
 create policy "Public inspections" on inspections for all using (true) with check (true);
   `.trim();
 
