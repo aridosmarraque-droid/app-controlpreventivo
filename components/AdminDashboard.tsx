@@ -162,24 +162,38 @@ export const AdminDashboard: React.FC = () => {
   };
 
   const sqlSnippet = `
--- Crea las tablas necesarias en el SQL Editor de Supabase
-
-create table sites (
+-- 1. TABLA DE SITIOS (Configuración)
+create table if not exists sites (
   id text primary key,
   data jsonb not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
-create table inspections (
+-- 2. TABLA DE INSPECCIONES (Resultados)
+create table if not exists inspections (
   id text primary key,
   site_name text,
   inspector_name text,
   date text,
+  pdf_url text, -- Nuevo campo para el PDF
   data jsonb not null,
   created_at timestamp with time zone default timezone('utc'::text, now()) not null
 );
 
--- Habilitar acceso público (DEMO)
+-- 3. STORAGE (Para PDFs)
+-- IMPORTANTE: Debes crear un bucket público llamado 'reports' en el menú Storage de Supabase.
+-- Si quieres hacerlo por SQL (puede requerir permisos extra):
+insert into storage.buckets (id, name, public) values ('reports', 'reports', true);
+
+create policy "Acceso Publico Reports"
+on storage.objects for select
+using ( bucket_id = 'reports' );
+
+create policy "Subida Publica Reports"
+on storage.objects for insert
+with check ( bucket_id = 'reports' );
+
+-- 4. POLÍTICAS DE SEGURIDAD (Row Level Security)
 alter table sites enable row level security;
 create policy "Public sites" on sites for all using (true) with check (true);
 
@@ -424,8 +438,9 @@ create policy "Public inspections" on inspections for all using (true) with chec
                  
                  <ol className="list-decimal pl-4 space-y-2 text-slate-600">
                     <li>Crea una cuenta en <a href="https://supabase.com" target="_blank" className="text-blue-600 underline">supabase.com</a> y crea un proyecto.</li>
+                    <li>Ve al menú <strong>Storage</strong> y crea un bucket público llamado <code>reports</code>.</li>
                     <li>
-                        Ve al <strong>SQL Editor</strong> en Supabase y ejecuta este código:
+                        Ve al <strong>SQL Editor</strong> en Supabase y ejecuta este código (incluye creación de tablas y buckets):
                         <div className="relative mt-2">
                             <pre className="bg-slate-800 text-slate-200 p-3 rounded-lg text-xs overflow-x-auto">
                                 {sqlSnippet}
@@ -440,8 +455,7 @@ create policy "Public inspections" on inspections for all using (true) with chec
                         </div>
                     </li>
                     <li>Ve a <strong>Project Settings &gt; API</strong> en Supabase.</li>
-                    <li>Copia la <strong>URL</strong> y la <strong>anon public key</strong>.</li>
-                    <li>Pega esas claves en el archivo <code>services/supabaseClient.ts</code> de esta aplicación.</li>
+                    <li>Copia la <strong>URL</strong> y la <strong>anon public key</strong> al archivo <code>services/supabaseClient.ts</code>.</li>
                  </ol>
              </div>
          )}
