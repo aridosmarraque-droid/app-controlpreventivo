@@ -7,6 +7,14 @@ const INSPECTIONS_KEY = 'sp_inspections';
 // Seed data: EMPTY now because we are connected to real data
 const SEED_SITES: Site[] = [];
 
+// Helper to remove heavy data from logs to save space
+const stripHeavyData = (log: InspectionLog): InspectionLog => {
+    return {
+        ...log,
+        answers: log.answers.map(a => ({ ...a, photoUrl: undefined })) // Remove base64 photos
+    };
+};
+
 export const storageService = {
   // --- SITES MANAGEMENT ---
 
@@ -56,8 +64,12 @@ export const storageService = {
     if (index >= 0) sites[index] = site;
     else sites.push(site);
     
-    localStorage.setItem(SITES_KEY, JSON.stringify(sites));
-    window.dispatchEvent(new Event('sites-updated'));
+    try {
+        localStorage.setItem(SITES_KEY, JSON.stringify(sites));
+        window.dispatchEvent(new Event('sites-updated'));
+    } catch (e) {
+        console.error("Storage Full (Sites)", e);
+    }
 
     if (checkSupabaseConfig() && navigator.onLine && supabase) {
       try {
@@ -108,7 +120,7 @@ export const storageService = {
 
   // Updated: Save metadata AND handles upload logic elsewhere
   saveInspection: async (inspection: InspectionLog) => {
-    const inspections = storageService.getInspections();
+    let inspections = storageService.getInspections();
     const existingIndex = inspections.findIndex(i => i.id === inspection.id);
     
     inspection.synced = false; 
@@ -116,7 +128,32 @@ export const storageService = {
     if (existingIndex >= 0) inspections[existingIndex] = inspection;
     else inspections.push(inspection);
     
-    localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(inspections));
+    try {
+        localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(inspections));
+    } catch (e: any) {
+        // QUOTA EXCEEDED HANDLING
+        if (e.name === 'QuotaExceededError' || e.code === 22) {
+            console.warn("Storage Full! Attempting cleanup...");
+            
+            // 1. Remove photos from ALREADY SYNCED inspections
+            // We keep the log for history, but remove heavy base64 strings
+            inspections = inspections.map(i => {
+                if (i.synced && i.id !== inspection.id) {
+                    return stripHeavyData(i);
+                }
+                return i;
+            });
+            
+            try {
+                localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(inspections));
+            } catch (retryError) {
+                console.error("Critical Storage Failure: Cannot save locally.", retryError);
+                // Even if local save fails, we proceed to attempt Cloud Upload below if online.
+                // But we should re-throw or notify if offline so UI knows.
+                if (!navigator.onLine) throw retryError;
+            }
+        }
+    }
     
     // Attempt sync immediately if no PDF is involved yet (drafts)
     if (checkSupabaseConfig() && navigator.onLine && supabase && !inspection.pdfUrl) {
@@ -149,6 +186,7 @@ export const storageService = {
       const updatedLog = { ...log, pdfUrl: publicUrl, synced: true };
 
       // 4. Save to Database (including pdf_url column)
+      // Note: We upload the FULL log data to Supabase (including photos if small enough, but usually text)
       const { error: dbError } = await supabase.from('inspections').upsert({
           id: updatedLog.id,
           site_name: updatedLog.siteName,
@@ -161,6 +199,7 @@ export const storageService = {
       if (dbError) throw dbError;
 
       // 5. Update Local Storage with the synced version (contains URL)
+      // And now that it is synced, we can potentially strip heavy data locally if needed
       await storageService.saveInspection(updatedLog);
       return publicUrl;
   },
@@ -184,6 +223,11 @@ export const storageService = {
     const idx = inspections.findIndex(i => i.id === log.id);
     if (idx >= 0) {
         inspections[idx].synced = true;
+        
+        // OPTIMIZATION: If we just synced, and storage is getting full, 
+        // we could strip photos from the local copy here. 
+        // For now, just mark synced.
+        
         localStorage.setItem(INSPECTIONS_KEY, JSON.stringify(inspections));
     }
   },
