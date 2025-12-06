@@ -2,8 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { Site, Area, InspectionPoint } from '../types';
 import { storageService } from '../services/storageService';
 import { geminiService } from '../services/geminiService';
-import { checkSupabaseConfig } from '../services/supabaseClient';
-import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase } from 'lucide-react';
+import { checkSupabaseConfig, supabase } from '../services/supabaseClient';
+import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 // Simple UUID generator fallback
@@ -15,6 +15,7 @@ export const AdminDashboard: React.FC = () => {
   const [isSuggesting, setIsSuggesting] = useState(false);
   const [showDbGuide, setShowDbGuide] = useState(false);
   const [hasCopiedSql, setHasCopiedSql] = useState(false);
+  const [isTestingConnection, setIsTestingConnection] = useState(false);
 
   useEffect(() => {
     setSites(storageService.getSites());
@@ -40,6 +41,36 @@ export const AdminDashboard: React.FC = () => {
       setSites(prev => prev.map(s => s.id === editingSite.id ? editingSite : s));
       toast.success('Cambios guardados');
       setEditingSite(null);
+    }
+  };
+
+  const handleTestConnection = async () => {
+    if (!checkSupabaseConfig() || !supabase) {
+      toast.error("Configuración de Supabase inválida.");
+      return;
+    }
+    
+    setIsTestingConnection(true);
+    const toastId = toast.loading("Probando conexión...");
+    
+    try {
+      // Intenta una operación simple de lectura (count) que no requiera datos reales
+      const { count, error } = await supabase
+        .from('sites')
+        .select('*', { count: 'exact', head: true });
+        
+      if (error) {
+        throw error;
+      }
+      
+      toast.success(`Conexión Exitosa. (Status: 200)`, { id: toastId });
+      alert(`✅ Conexión establecida con Supabase.\nRespuesta OK.\n\nNota: Si las tablas no existen, esto podría fallar al guardar datos reales.`);
+    } catch (e: any) {
+      console.error("Test Connection Error:", e);
+      toast.error("Error de Conexión", { id: toastId });
+      alert(`❌ Error al conectar con Supabase:\n\n${JSON.stringify(e, null, 2)}\n\nMensaje: ${e.message || 'Desconocido'}\n\nPosible causa: Bloqueo de red, claves incorrectas o tabla inexistente.`);
+    } finally {
+      setIsTestingConnection(false);
     }
   };
 
@@ -370,6 +401,18 @@ create policy "Public inspections" on inspections for all using (true) with chec
                     <div className="p-3 bg-orange-100 text-orange-800 rounded-lg text-xs font-medium border border-orange-200">
                        ⚠️ La sincronización no está activa. Para activarla, sigue estos pasos:
                     </div>
+                 )}
+
+                 {/* Test Connection Button */}
+                 {checkSupabaseConfig() && (
+                   <button 
+                     onClick={handleTestConnection}
+                     disabled={isTestingConnection}
+                     className="w-full py-2 bg-blue-50 text-blue-600 border border-blue-200 rounded-lg text-xs font-bold flex items-center justify-center gap-2 hover:bg-blue-100"
+                   >
+                      {isTestingConnection ? <RefreshCw className="w-3 h-3 animate-spin" /> : <RefreshCw className="w-3 h-3" />}
+                      Probar Conexión con Supabase
+                   </button>
                  )}
                  
                  <ol className="list-decimal pl-4 space-y-2 text-slate-600">
