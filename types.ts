@@ -1,3 +1,4 @@
+
 export interface InspectionPoint {
   id: string;
   name: string; // e.g., "Extintor"
@@ -40,6 +41,7 @@ export interface InspectionLog {
   answers: Answer[];
   status: 'completed' | 'draft';
   synced?: boolean; // New flag: true if saved to Supabase
+  pdfUrl?: string; // URL del PDF en Supabase Storage
 }
 
 export enum AppView {
