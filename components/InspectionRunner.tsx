@@ -77,10 +77,17 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     setTempPhoto(null);
     setComment('');
     
-    // Force scroll to top
-    if (scrollContainerRef.current) {
-        scrollContainerRef.current.scrollTop = 0;
-    }
+    // Force scroll to top with delay to ensure DOM is ready
+    // This fixes the issue where scroll stops working after a few steps
+    setTimeout(() => {
+        if (scrollContainerRef.current) {
+            scrollContainerRef.current.scrollTop = 0;
+            // Also try scrollTo for better compatibility
+            scrollContainerRef.current.scrollTo({ top: 0, behavior: 'auto' });
+        }
+        // Ensure main window is also reset (mobile browsers)
+        window.scrollTo(0, 0);
+    }, 50); // 50ms delay is usually enough
   }, [currentStepIndex]);
 
   const handleStart = () => {
