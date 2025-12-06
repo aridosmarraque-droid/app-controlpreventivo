@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect } from 'react';
 import { Site, InspectionLog, Answer } from '../types';
-import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard } from 'lucide-react';
+import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard, MessageSquare } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 interface Props {
@@ -35,6 +35,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
   // Local state for the current step
   const [selectedStatus, setSelectedStatus] = useState<boolean | null>(null);
   const [tempPhoto, setTempPhoto] = useState<string | null>(null);
+  const [comment, setComment] = useState<string>('');
 
   const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null;
 
@@ -42,6 +43,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
   useEffect(() => {
     setSelectedStatus(null);
     setTempPhoto(null);
+    setComment('');
   }, [currentStepIndex]);
 
   const handleStart = () => {
@@ -73,6 +75,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       areaName: currentStep.areaName,
       isOk: selectedStatus,
       photoUrl: tempPhoto || undefined,
+      comments: comment.trim() || undefined,
       timestamp: Date.now()
     };
 
@@ -209,10 +212,12 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       <div className="flex-1 overflow-y-auto pb-20 no-scrollbar">
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-8">
           
-          {/* 1. Question */}
+          {/* 1. Typography Adjusted: Title Bigger, Question Smaller */}
           <div>
-            <h3 className="text-sm font-bold text-slate-400 mb-2 uppercase">{currentStep?.point.name}</h3>
-            <h2 className="text-xl font-bold text-slate-800 leading-tight">
+            <h3 className="text-xl font-bold text-slate-800 mb-2 uppercase leading-tight">
+              {currentStep?.point.name}
+            </h3>
+            <h2 className="text-lg font-medium text-slate-600 leading-snug">
               {currentStep?.point.question}
             </h2>
           </div>
@@ -248,7 +253,21 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
             </button>
           </div>
 
-          {/* 3. Photo Section (Conditional) */}
+          {/* 3. Optional Comments */}
+          <div className="animate-in fade-in">
+             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
+                <MessageSquare className="w-4 h-4 text-slate-400" />
+                Comentarios / Observaciones
+             </label>
+             <textarea 
+               value={comment}
+               onChange={(e) => setComment(e.target.value)}
+               placeholder="Escribe aquí si hay algún detalle relevante..."
+               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 outline-none text-sm min-h-[80px]"
+             />
+          </div>
+
+          {/* 4. Photo Section (Conditional) */}
           {currentStep?.point.requiresPhoto ? (
             <div className="animate-in fade-in slide-in-from-bottom-2">
               <label className="block text-sm font-bold text-slate-700 mb-2">
