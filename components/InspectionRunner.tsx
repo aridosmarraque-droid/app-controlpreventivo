@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
-import { Site, InspectionLog, Answer } from '../types';
-import { Camera, Check, X, ChevronRight, MessageSquare, RotateCcw, User, Mail, CreditCard, Cloud, CloudOff, HardDrive, Wifi } from 'lucide-react';
+import { Site, InspectionLog, Answer, InspectionDraft } from '../types';
+import { Camera, Check, X, ChevronRight, MessageSquare, RotateCcw, User, Cloud, HardDrive } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 import { db } from '../services/db';
 import { storageService } from '../services/storageService';
@@ -8,6 +8,7 @@ import { checkSupabaseConfig } from '../services/supabaseClient';
 
 interface Props {
   site: Site;
+  initialDraft?: InspectionDraft | null; // Optional draft to resume
   onComplete: (log: InspectionLog) => void;
   onCancel: () => void;
 }
@@ -38,10 +39,8 @@ const compressImage = (base64Str: string, maxWidth = 1024, quality = 0.6): Promi
   });
 };
 
-export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }) => {
+export const InspectionRunner: React.FC<Props> = ({ site, initialDraft, onComplete, onCancel }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
-
-  // Estimates available storage
   const [storageEstimate, setStorageEstimate] = useState<number | null>(null);
 
   useEffect(() => {
@@ -65,35 +64,50 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     return list.map(item => ({ ...item, total: list.length }));
   }, [site]);
 
-  const [currentStepIndex, setCurrentStepIndex] = useState(-1);
-  const [answers, setAnswers] = useState<Record<string, Answer>>({});
-  
-  const [inspectorInfo, setInspectorInfo] = useState({
+  // STATE INITIALIZATION
+  // If draft exists, use its values. Otherwise default.
+  const [currentStepIndex, setCurrentStepIndex] = useState(initialDraft ? initialDraft.currentStepIndex : -1);
+  const [answers, setAnswers] = useState<Record<string, Answer>>(initialDraft ? initialDraft.answers : {});
+  const [inspectorInfo, setInspectorInfo] = useState(initialDraft ? initialDraft.inspectorInfo : {
     name: '',
     dni: '',
     email: ''
   });
 
   const [selectedStatus, setSelectedStatus] = useState<boolean | null>(null);
-  
-  // Logic: "local::[id]" (IndexedDB) or "https://..." (Cloud) or Base64 (Legacy/Preview)
-  // For the current step, we hold the PREVIEW string (base64) in tempPhotoPreview
-  // and the STORAGE reference (local:: or https::) in tempPhotoRef
   const [tempPhotoPreview, setTempPhotoPreview] = useState<string | null>(null);
   const [tempPhotoRef, setTempPhotoRef] = useState<string | null>(null);
   const [photoUploadStatus, setPhotoUploadStatus] = useState<'none' | 'uploading' | 'done' | 'offline'>('none');
-  
   const [comment, setComment] = useState<string>('');
   const [isCompressing, setIsCompressing] = useState(false);
 
   const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null;
 
+  // AUTO-SAVE DRAFT EFFECT
   useEffect(() => {
+     // Save draft every time we progress or change key data, but only if we have started (index >= 0)
+     if (currentStepIndex >= 0 && inspectorInfo.name) {
+         const draft: InspectionDraft = {
+             siteId: site.id,
+             currentStepIndex,
+             answers,
+             inspectorInfo,
+             lastModified: Date.now()
+         };
+         storageService.saveDraft(draft);
+     }
+  }, [currentStepIndex, answers, inspectorInfo, site.id]);
+
+  useEffect(() => {
+    // Reset local step state when step changes
     setSelectedStatus(null);
     setTempPhotoPreview(null);
     setTempPhotoRef(null);
     setPhotoUploadStatus('none');
     setComment('');
+    
+    // Check if we already have an answer for this new step (e.g. going back? future feature)
+    // For now, we assume linear progression so no need to hydrate current step specific fields
     
     setTimeout(() => {
         if (scrollContainerRef.current) {
@@ -108,7 +122,6 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       toast.error('Completa los datos del inspector');
       return;
     }
-    // Generate a temporary ID for this session to group photos in storage if needed
     setCurrentStepIndex(0);
   };
 
@@ -131,16 +144,13 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       question: currentStep.point.question,
       areaName: currentStep.areaName,
       isOk: selectedStatus,
-      photoUrl: tempPhotoRef || undefined, // Saves "local::xyz" or "https::xyz"
+      photoUrl: tempPhotoRef || undefined, 
       comments: comment.trim() || undefined,
       timestamp: Date.now()
     };
 
     const newAnswers = { ...answers, [currentStep.point.id]: answer };
     setAnswers(newAnswers);
-
-    // Save progress to localStorage (lightweight) so if app crashes we might recover (future feature)
-    // storageService.saveDraft(newAnswers); 
 
     if (currentStepIndex < steps.length - 1) {
       setCurrentStepIndex(prev => prev + 1);
@@ -156,6 +166,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
         answers: Object.values(newAnswers),
         status: 'completed'
       };
+      // Storage service deals with deleting the draft inside saveInspection
       onComplete(log);
     }
   };
@@ -170,28 +181,22 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       reader.onloadend = async () => {
         try {
             const rawBase64 = reader.result as string;
-            // 1. Compress
             const compressed = await compressImage(rawBase64);
-            setTempPhotoPreview(compressed); // Show to user immediately
+            setTempPhotoPreview(compressed); 
 
-            // 2. Save to IndexedDB (Offline capability)
+            // Save to IndexedDB (Works for drafts too!)
             const photoId = `${site.id}_${currentStep.point.id}_${Date.now()}`;
             await db.savePhoto(photoId, compressed);
-            setTempPhotoRef(`local::${photoId}`); // Set default ref to local
+            setTempPhotoRef(`local::${photoId}`); 
 
-            // 3. Try Background Upload (If online)
             if (navigator.onLine && checkSupabaseConfig()) {
                 setPhotoUploadStatus('uploading');
                 const cloudPath = `photos/${site.id}/${currentStep.point.id}_${Date.now()}.jpg`;
                 
-                // Do not await strictly, let UI update, but we want to capture result
                 storageService.uploadPhotoBlob(cloudPath, compressed).then(publicUrl => {
                     if (publicUrl) {
-                        setTempPhotoRef(publicUrl); // Switch ref to Cloud URL
+                        setTempPhotoRef(publicUrl); 
                         setPhotoUploadStatus('done');
-                        // Optional: Delete local copy to save space? 
-                        // db.deletePhoto(photoId); 
-                        // Better keep it until final confirmation or just leave it.
                     } else {
                         setPhotoUploadStatus('offline');
                     }
@@ -213,7 +218,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
 
   if (steps.length === 0) return <div className="p-8 text-center">Sin puntos. <button onClick={onCancel}>Volver</button></div>;
 
-  // --- Login Form ---
+  // --- Login Form (Hydrated if draft exists) ---
   if (currentStepIndex === -1) {
     return (
       <div className="space-y-6 animate-in slide-in-from-right">
@@ -285,7 +290,6 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
             <div className="animate-in fade-in slide-in-from-bottom-2">
               <div className="flex justify-between items-center mb-2">
                   <label className="text-sm font-bold text-slate-700">Foto Requerida</label>
-                  {/* Status Indicator for Photo Upload */}
                   {tempPhotoRef && (
                       <div className="flex items-center gap-1 text-[10px] font-bold uppercase">
                           {photoUploadStatus === 'uploading' && <span className="text-blue-500 flex items-center gap-1"><Cloud className="w-3 h-3 animate-pulse" /> Subiendo...</span>}
@@ -336,4 +340,3 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     </div>
   );
 };
-
