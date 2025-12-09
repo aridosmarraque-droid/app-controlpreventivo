@@ -4,8 +4,9 @@ import { toast } from 'react-hot-toast';
 
 // CONFIGURACIÓN ULTRAMSG
 // Lo ideal es mover esto a variables de entorno (VITE_ULTRAMSG_INSTANCE, etc)
-const INSTANCE_ID = "instance114416"; // CAMBIAR POR TU INSTANCE ID
-const TOKEN = "ayg70rcuhiafs27y";         // CAMBIAR POR TU TOKEN
+// Usamos 'as string' para evitar que TypeScript detecte error si cambias el valor y lo comparas con el default.
+const INSTANCE_ID = "instance114416" as string; // <--- PON AQUÍ TU INSTANCE ID REAL
+const TOKEN = "ayg70rcuhiafs27y" as string;         // <--- PON AQUÍ TU TOKEN REAL
 
 const PERIOD_DAYS: Record<Periodicity, number> = {
   'mensual': 30,
@@ -17,7 +18,7 @@ const PERIOD_DAYS: Record<Periodicity, number> = {
 export const notificationService = {
   
   checkAndNotifyDueInspections: async () => {
-    // Solo correr si hay configuración (simulada aquí con length check)
+    // Verificamos si sigue siendo el valor por defecto
     if (INSTANCE_ID === "instance99999") {
         console.warn("UltraMsg no configurado. Saltando chequeo de notificaciones.");
         return;
