@@ -1,7 +1,10 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { Site, InspectionLog, Answer } from '../types';
-import { Camera, Check, X, ChevronRight, AlertCircle, RotateCcw, User, Mail, CreditCard, MessageSquare, ImageIcon } from 'lucide-react';
+import { Camera, Check, X, ChevronRight, MessageSquare, RotateCcw, User, Mail, CreditCard, Cloud, CloudOff, HardDrive, Wifi } from 'lucide-react';
 import { toast } from 'react-hot-toast';
+import { db } from '../services/db';
+import { storageService } from '../services/storageService';
+import { checkSupabaseConfig } from '../services/supabaseClient';
 
 interface Props {
   site: Site;
@@ -9,7 +12,6 @@ interface Props {
   onCancel: () => void;
 }
 
-// Helper to compress images before storing them
 const compressImage = (base64Str: string, maxWidth = 1024, quality = 0.6): Promise<string> => {
   return new Promise((resolve) => {
     const img = new Image();
@@ -18,12 +20,10 @@ const compressImage = (base64Str: string, maxWidth = 1024, quality = 0.6): Promi
       const canvas = document.createElement('canvas');
       let width = img.width;
       let height = img.height;
-
       if (width > maxWidth) {
         height = (height * maxWidth) / width;
         width = maxWidth;
       }
-
       canvas.width = width;
       canvas.height = height;
       const ctx = canvas.getContext('2d');
@@ -31,17 +31,30 @@ const compressImage = (base64Str: string, maxWidth = 1024, quality = 0.6): Promi
           ctx.drawImage(img, 0, 0, width, height);
           resolve(canvas.toDataURL('image/jpeg', quality));
       } else {
-          resolve(base64Str); // Fallback
+          resolve(base64Str);
       }
     };
-    img.onerror = () => resolve(base64Str); // Fallback
+    img.onerror = () => resolve(base64Str);
   });
 };
 
 export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }) => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
-  // Flatten points structure to linear steps
+  // Estimates available storage
+  const [storageEstimate, setStorageEstimate] = useState<number | null>(null);
+
+  useEffect(() => {
+    if (navigator.storage && navigator.storage.estimate) {
+      navigator.storage.estimate().then(estimate => {
+        if (estimate.quota && estimate.usage) {
+           const percentUsed = (estimate.usage / estimate.quota) * 100;
+           setStorageEstimate(percentUsed);
+        }
+      });
+    }
+  }, []);
+
   const steps = useMemo(() => {
     const list: { areaName: string; areaId: string; point: any; index: number; total: number }[] = [];
     site.areas.forEach(area => {
@@ -52,53 +65,54 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     return list.map(item => ({ ...item, total: list.length }));
   }, [site]);
 
-  // Step -1 represents the Inspector Info form
   const [currentStepIndex, setCurrentStepIndex] = useState(-1);
   const [answers, setAnswers] = useState<Record<string, Answer>>({});
   
-  // Inspector Info State
   const [inspectorInfo, setInspectorInfo] = useState({
     name: '',
     dni: '',
     email: ''
   });
 
-  // Local state for the current step
   const [selectedStatus, setSelectedStatus] = useState<boolean | null>(null);
-  const [tempPhoto, setTempPhoto] = useState<string | null>(null);
+  
+  // Logic: "local::[id]" (IndexedDB) or "https://..." (Cloud) or Base64 (Legacy/Preview)
+  // For the current step, we hold the PREVIEW string (base64) in tempPhotoPreview
+  // and the STORAGE reference (local:: or https::) in tempPhotoRef
+  const [tempPhotoPreview, setTempPhotoPreview] = useState<string | null>(null);
+  const [tempPhotoRef, setTempPhotoRef] = useState<string | null>(null);
+  const [photoUploadStatus, setPhotoUploadStatus] = useState<'none' | 'uploading' | 'done' | 'offline'>('none');
+  
   const [comment, setComment] = useState<string>('');
   const [isCompressing, setIsCompressing] = useState(false);
 
   const currentStep = currentStepIndex >= 0 ? steps[currentStepIndex] : null;
 
-  // Reset local state when step changes and SCROLL TO TOP
   useEffect(() => {
     setSelectedStatus(null);
-    setTempPhoto(null);
+    setTempPhotoPreview(null);
+    setTempPhotoRef(null);
+    setPhotoUploadStatus('none');
     setComment('');
     
-    // Force scroll to top with delay to ensure DOM is ready
-    // This fixes the issue where scroll stops working after a few steps
     setTimeout(() => {
         if (scrollContainerRef.current) {
             scrollContainerRef.current.scrollTop = 0;
-            // Also try scrollTo for better compatibility
-            scrollContainerRef.current.scrollTo({ top: 0, behavior: 'auto' });
         }
-        // Ensure main window is also reset (mobile browsers)
         window.scrollTo(0, 0);
-    }, 50); // 50ms delay is usually enough
+    }, 50);
   }, [currentStepIndex]);
 
   const handleStart = () => {
     if (!inspectorInfo.name || !inspectorInfo.dni || !inspectorInfo.email) {
-      toast.error('Por favor completa todos los datos del inspector');
+      toast.error('Completa los datos del inspector');
       return;
     }
+    // Generate a temporary ID for this session to group photos in storage if needed
     setCurrentStepIndex(0);
   };
 
-  const handleNext = () => {
+  const handleNext = async () => {
     if (!currentStep) return;
 
     if (selectedStatus === null) {
@@ -106,9 +120,8 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       return;
     }
 
-    // Validation: Photo required check
-    if (currentStep.point.requiresPhoto && !tempPhoto) {
-      toast.error('Es obligatorio tomar una foto');
+    if (currentStep.point.requiresPhoto && !tempPhotoRef) {
+      toast.error('Foto obligatoria');
       return;
     }
 
@@ -118,7 +131,7 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
       question: currentStep.point.question,
       areaName: currentStep.areaName,
       isOk: selectedStatus,
-      photoUrl: tempPhoto || undefined,
+      photoUrl: tempPhotoRef || undefined, // Saves "local::xyz" or "https::xyz"
       comments: comment.trim() || undefined,
       timestamp: Date.now()
     };
@@ -126,10 +139,12 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     const newAnswers = { ...answers, [currentStep.point.id]: answer };
     setAnswers(newAnswers);
 
+    // Save progress to localStorage (lightweight) so if app crashes we might recover (future feature)
+    // storageService.saveDraft(newAnswers); 
+
     if (currentStepIndex < steps.length - 1) {
       setCurrentStepIndex(prev => prev + 1);
     } else {
-      // Finish
       const log: InspectionLog = {
         id: `insp-${Date.now()}`,
         siteId: site.id,
@@ -147,17 +162,47 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
 
   const handlePhotoUpload = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
+    if (file && currentStep) {
       setIsCompressing(true);
+      setPhotoUploadStatus('none');
+      
       const reader = new FileReader();
       reader.onloadend = async () => {
         try {
             const rawBase64 = reader.result as string;
-            // Compress to avoid QuotaExceededError in localStorage
+            // 1. Compress
             const compressed = await compressImage(rawBase64);
-            setTempPhoto(compressed);
+            setTempPhotoPreview(compressed); // Show to user immediately
+
+            // 2. Save to IndexedDB (Offline capability)
+            const photoId = `${site.id}_${currentStep.point.id}_${Date.now()}`;
+            await db.savePhoto(photoId, compressed);
+            setTempPhotoRef(`local::${photoId}`); // Set default ref to local
+
+            // 3. Try Background Upload (If online)
+            if (navigator.onLine && checkSupabaseConfig()) {
+                setPhotoUploadStatus('uploading');
+                const cloudPath = `photos/${site.id}/${currentStep.point.id}_${Date.now()}.jpg`;
+                
+                // Do not await strictly, let UI update, but we want to capture result
+                storageService.uploadPhotoBlob(cloudPath, compressed).then(publicUrl => {
+                    if (publicUrl) {
+                        setTempPhotoRef(publicUrl); // Switch ref to Cloud URL
+                        setPhotoUploadStatus('done');
+                        // Optional: Delete local copy to save space? 
+                        // db.deletePhoto(photoId); 
+                        // Better keep it until final confirmation or just leave it.
+                    } else {
+                        setPhotoUploadStatus('offline');
+                    }
+                }).catch(() => setPhotoUploadStatus('offline'));
+            } else {
+                setPhotoUploadStatus('offline');
+            }
+
         } catch(err) {
             toast.error("Error procesando imagen");
+            console.error(err);
         } finally {
             setIsCompressing(false);
         }
@@ -166,16 +211,9 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     }
   };
 
-  if (steps.length === 0) {
-    return (
-       <div className="text-center p-8">
-         <p>Esta instalación no tiene puntos de inspección.</p>
-         <button onClick={onCancel} className="mt-4 text-blue-500">Volver</button>
-       </div>
-    );
-  }
+  if (steps.length === 0) return <div className="p-8 text-center">Sin puntos. <button onClick={onCancel}>Volver</button></div>;
 
-  // --- Login Form View ---
+  // --- Login Form ---
   if (currentStepIndex === -1) {
     return (
       <div className="space-y-6 animate-in slide-in-from-right">
@@ -184,205 +222,111 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
              <User className="w-6 h-6 text-safety-600" />
              Datos del Inspector
            </h2>
-           
            <div className="space-y-4">
-             <div>
-               <label className="block text-sm font-bold text-slate-500 mb-1">Nombre Completo</label>
-               <div className="relative">
-                 <User className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
-                 <input 
-                   type="text" 
-                   value={inspectorInfo.name}
-                   onChange={e => setInspectorInfo({...inspectorInfo, name: e.target.value})}
-                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
-                   placeholder="Ej. Juan Pérez"
-                 />
-               </div>
-             </div>
-
-             <div>
-               <label className="block text-sm font-bold text-slate-500 mb-1">DNI / Identificación</label>
-               <div className="relative">
-                 <CreditCard className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
-                 <input 
-                   type="text" 
-                   value={inspectorInfo.dni}
-                   onChange={e => setInspectorInfo({...inspectorInfo, dni: e.target.value})}
-                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
-                   placeholder="Ej. 12345678X"
-                 />
-               </div>
-             </div>
-
-             <div>
-               <label className="block text-sm font-bold text-slate-500 mb-1">Correo Electrónico</label>
-               <div className="relative">
-                 <Mail className="absolute left-3 top-3 w-5 h-5 text-slate-300" />
-                 <input 
-                   type="email" 
-                   value={inspectorInfo.email}
-                   onChange={e => setInspectorInfo({...inspectorInfo, email: e.target.value})}
-                   className="w-full pl-10 pr-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 focus:ring-2 focus:ring-safety-100 outline-none transition-all"
-                   placeholder="Ej. inspector@empresa.com"
-                 />
-               </div>
-             </div>
+             <input type="text" value={inspectorInfo.name} onChange={e => setInspectorInfo({...inspectorInfo, name: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl" placeholder="Nombre Completo" />
+             <input type="text" value={inspectorInfo.dni} onChange={e => setInspectorInfo({...inspectorInfo, dni: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl" placeholder="DNI" />
+             <input type="email" value={inspectorInfo.email} onChange={e => setInspectorInfo({...inspectorInfo, email: e.target.value})} className="w-full p-3 bg-slate-50 border rounded-xl" placeholder="Email" />
            </div>
-
            <div className="mt-8 flex gap-3">
              <button onClick={onCancel} className="flex-1 py-3 text-slate-500 font-bold">Cancelar</button>
-             <button 
-               onClick={handleStart}
-               className="flex-[2] py-3 bg-safety-600 text-white rounded-xl font-bold shadow-lg shadow-safety-200 hover:bg-safety-700 active:scale-[0.98] transition-all"
-             >
-               Comenzar Inspección
-             </button>
+             <button onClick={handleStart} className="flex-[2] py-3 bg-safety-600 text-white rounded-xl font-bold shadow-lg hover:bg-safety-700">Comenzar</button>
            </div>
         </div>
       </div>
     );
   }
 
-  // --- Inspection Steps View ---
   const progress = ((currentStepIndex + 1) / steps.length) * 100;
 
   return (
     <div className="flex flex-col h-[calc(100vh-6rem)] relative">
-      {/* Header Info - Step counter */}
-      <div className="mb-4">
-        <div className="flex justify-end text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
-          <span>Paso {currentStepIndex + 1}/{steps.length}</span>
-        </div>
-        <div className="h-2 bg-slate-200 rounded-full overflow-hidden">
-          <div 
-            className="h-full bg-safety-500 transition-all duration-300" 
-            style={{ width: `${progress}%` }}
-          />
-        </div>
+      <div className="mb-4 flex justify-between items-end">
+         <div className="flex items-center gap-2 text-[10px] text-slate-400">
+             <HardDrive className="w-3 h-3" />
+             {storageEstimate !== null ? (
+                 <span>Disco: {storageEstimate.toFixed(1)}% usado</span>
+             ) : (
+                 <span>Almacenamiento Local Activo</span>
+             )}
+         </div>
+         <div className="text-xs font-bold text-slate-400 uppercase tracking-wider mb-2">
+           Paso {currentStepIndex + 1}/{steps.length}
+         </div>
+      </div>
+      <div className="h-2 bg-slate-200 rounded-full overflow-hidden mb-4">
+          <div className="h-full bg-safety-500 transition-all duration-300" style={{ width: `${progress}%` }} />
       </div>
 
-      {/* Main Card with Scroll Reference */}
-      <div 
-        ref={scrollContainerRef}
-        className="flex-1 overflow-y-auto pb-24 no-scrollbar scroll-smooth"
-      >
+      <div ref={scrollContainerRef} className="flex-1 overflow-y-auto pb-24 no-scrollbar scroll-smooth">
         <div className="bg-white rounded-2xl shadow-sm border border-slate-200 p-6 space-y-8">
-          
-          {/* 1. Typography Adjusted: Zone Blue/Large, Point Large */}
           <div>
-            <div className="text-xl font-bold text-blue-600 mb-1 leading-tight">
-               {currentStep?.areaName}
-            </div>
-            <h3 className="text-xl font-bold text-slate-800 mb-2 uppercase leading-tight">
-              {currentStep?.point.name}
-            </h3>
-            <h2 className="text-lg font-medium text-slate-500 leading-snug">
-              {currentStep?.point.question}
-            </h2>
+            <div className="text-xl font-bold text-blue-600 mb-1 leading-tight">{currentStep?.areaName}</div>
+            <h3 className="text-xl font-bold text-slate-800 mb-2 uppercase leading-tight">{currentStep?.point.name}</h3>
+            <h2 className="text-lg font-medium text-slate-500 leading-snug">{currentStep?.point.question}</h2>
           </div>
 
-          {/* 2. Answer Selection */}
           <div className="grid grid-cols-2 gap-4">
-            <button 
-              onClick={() => setSelectedStatus(false)}
-              className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
-                selectedStatus === false 
-                  ? 'border-red-500 bg-red-50 text-red-600' 
-                  : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'
-              }`}
-            >
-              <div className={`p-2 rounded-full ${selectedStatus === false ? 'bg-red-100' : 'bg-slate-100'}`}>
-                <X className="w-6 h-6" />
-              </div>
+            <button onClick={() => setSelectedStatus(false)} className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${selectedStatus === false ? 'border-red-500 bg-red-50 text-red-600' : 'border-slate-100 bg-white text-slate-400'}`}>
+              <div className={`p-2 rounded-full ${selectedStatus === false ? 'bg-red-100' : 'bg-slate-100'}`}><X className="w-6 h-6" /></div>
               <span className="font-bold">NO / Mal</span>
             </button>
-
-            <button 
-              onClick={() => setSelectedStatus(true)}
-              className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${
-                selectedStatus === true 
-                  ? 'border-green-500 bg-green-50 text-green-600' 
-                  : 'border-slate-100 bg-white text-slate-400 hover:border-slate-200'
-              }`}
-            >
-              <div className={`p-2 rounded-full ${selectedStatus === true ? 'bg-green-100' : 'bg-slate-100'}`}>
-                <Check className="w-6 h-6" />
-              </div>
+            <button onClick={() => setSelectedStatus(true)} className={`p-4 rounded-xl border-2 flex flex-col items-center gap-2 transition-all ${selectedStatus === true ? 'border-green-500 bg-green-50 text-green-600' : 'border-slate-100 bg-white text-slate-400'}`}>
+              <div className={`p-2 rounded-full ${selectedStatus === true ? 'bg-green-100' : 'bg-slate-100'}`}><Check className="w-6 h-6" /></div>
               <span className="font-bold">SI / Bien</span>
             </button>
           </div>
 
-          {/* 3. Optional Comments */}
           <div className="animate-in fade-in">
-             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2">
-                <MessageSquare className="w-4 h-4 text-slate-400" />
-                Comentarios / Observaciones
-             </label>
-             <textarea 
-               value={comment}
-               onChange={(e) => setComment(e.target.value)}
-               placeholder="Escribe aquí si hay algún detalle relevante..."
-               className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 outline-none text-sm min-h-[80px]"
-             />
+             <label className="flex items-center gap-2 text-sm font-bold text-slate-700 mb-2"><MessageSquare className="w-4 h-4 text-slate-400" /> Comentarios</label>
+             <textarea value={comment} onChange={(e) => setComment(e.target.value)} placeholder="Observaciones..." className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl focus:border-safety-500 outline-none text-sm min-h-[80px]" />
           </div>
 
-          {/* 4. Photo Section (Conditional) */}
           {currentStep?.point.requiresPhoto ? (
             <div className="animate-in fade-in slide-in-from-bottom-2">
-              <label className="block text-sm font-bold text-slate-700 mb-2">
-                Foto Requerida
-              </label>
-              <div className={`border-2 border-dashed rounded-xl overflow-hidden transition-colors ${tempPhoto ? 'border-safety-500' : 'border-slate-300 bg-slate-50'}`}>
+              <div className="flex justify-between items-center mb-2">
+                  <label className="text-sm font-bold text-slate-700">Foto Requerida</label>
+                  {/* Status Indicator for Photo Upload */}
+                  {tempPhotoRef && (
+                      <div className="flex items-center gap-1 text-[10px] font-bold uppercase">
+                          {photoUploadStatus === 'uploading' && <span className="text-blue-500 flex items-center gap-1"><Cloud className="w-3 h-3 animate-pulse" /> Subiendo...</span>}
+                          {photoUploadStatus === 'done' && <span className="text-green-500 flex items-center gap-1"><Cloud className="w-3 h-3" /> En Nube</span>}
+                          {photoUploadStatus === 'offline' && <span className="text-orange-500 flex items-center gap-1"><HardDrive className="w-3 h-3" /> Guardado Local</span>}
+                      </div>
+                  )}
+              </div>
+              
+              <div className={`border-2 border-dashed rounded-xl overflow-hidden transition-colors ${tempPhotoPreview ? 'border-safety-500' : 'border-slate-300 bg-slate-50'}`}>
                 {isCompressing ? (
                     <div className="h-48 flex flex-col items-center justify-center text-slate-400">
                         <div className="w-8 h-8 border-4 border-slate-300 border-t-safety-500 rounded-full animate-spin mb-2"></div>
-                        <p className="text-xs">Procesando imagen...</p>
+                        <p className="text-xs">Comprimiendo...</p>
                     </div>
-                ) : tempPhoto ? (
+                ) : tempPhotoPreview ? (
                   <div className="relative h-56 bg-black">
-                    <img src={tempPhoto} alt="Evidence" className="w-full h-full object-contain" />
-                    <button 
-                      onClick={() => setTempPhoto(null)} 
-                      className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full backdrop-blur-md"
-                    >
-                      <RotateCcw className="w-5 h-5" />
-                    </button>
+                    <img src={tempPhotoPreview} alt="Evidencia" className="w-full h-full object-contain" />
+                    <button onClick={() => { setTempPhotoPreview(null); setTempPhotoRef(null); }} className="absolute top-2 right-2 bg-black/50 text-white p-2 rounded-full backdrop-blur-md"><RotateCcw className="w-5 h-5" /></button>
                   </div>
                 ) : (
                   <label className="flex flex-col items-center justify-center h-48 cursor-pointer active:bg-slate-100">
                     <Camera className="w-10 h-10 text-slate-400 mb-3" />
-                    <p className="text-sm font-medium text-slate-600 text-center px-4">
-                      {currentStep.point.photoInstruction || 'Toma una foto de evidencia'}
-                    </p>
+                    <p className="text-sm font-medium text-slate-600 text-center px-4">{currentStep.point.photoInstruction || 'Toma una foto'}</p>
                     <input type="file" accept="image/*" capture="environment" className="hidden" onChange={handlePhotoUpload} />
                   </label>
                 )}
               </div>
             </div>
           ) : null}
-          
-          {/* Spacer for bottom nav */}
           <div className="h-4"></div>
         </div>
       </div>
 
-      {/* Footer Navigation */}
       <div className="fixed bottom-0 left-0 right-0 p-4 bg-white border-t border-slate-200 z-10 md:absolute md:rounded-b-2xl">
         <div className="max-w-3xl mx-auto flex gap-3">
-          <button 
-            onClick={onCancel}
-            className="px-4 py-3 rounded-xl border border-slate-200 text-slate-500 font-bold"
-          >
-            Cancelar
-          </button>
+          <button onClick={onCancel} className="px-4 py-3 rounded-xl border border-slate-200 text-slate-500 font-bold">Cancelar</button>
           <button 
             onClick={handleNext}
             disabled={selectedStatus === null || isCompressing}
-            className={`flex-1 flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-bold shadow-lg transition-all ${
-              selectedStatus !== null && !isCompressing
-                ? 'bg-safety-600 text-white shadow-safety-200 active:scale-[0.98]' 
-                : 'bg-slate-100 text-slate-400 cursor-not-allowed shadow-none'
-            }`}
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-6 rounded-xl font-bold shadow-lg transition-all ${selectedStatus !== null && !isCompressing ? 'bg-safety-600 text-white shadow-safety-200' : 'bg-slate-100 text-slate-400'}`}
           >
             {currentStepIndex === steps.length - 1 ? 'Finalizar' : 'Siguiente'}
             <ChevronRight className="w-5 h-5" />
@@ -392,3 +336,4 @@ export const InspectionRunner: React.FC<Props> = ({ site, onComplete, onCancel }
     </div>
   );
 };
+
