@@ -13,11 +13,18 @@ export interface Area {
   points: InspectionPoint[];
 }
 
+export type Periodicity = 'mensual' | 'trimestral' | 'cuatrimestral' | 'anual';
+
 export interface Site {
   id: string;
   name: string; // e.g., "Cantera Principal"
   areas: Area[];
   synced?: boolean; // New flag
+  
+  // New Fields for Notifications
+  periodicity?: Periodicity;
+  contactPhone?: string; // Format: 34600000000
+  lastReminderSent?: number; // Timestamp of last WhatsApp sent
 }
 
 export interface Answer {
@@ -43,6 +50,19 @@ export interface InspectionLog {
   status: 'completed' | 'draft';
   synced?: boolean; // New flag: true if saved to Supabase
   pdfUrl?: string; // URL del PDF en Supabase Storage
+}
+
+// NEW: Draft Interface
+export interface InspectionDraft {
+  siteId: string;
+  currentStepIndex: number;
+  answers: Record<string, Answer>;
+  inspectorInfo: {
+    name: string;
+    dni: string;
+    email: string;
+  };
+  lastModified: number;
 }
 
 export enum AppView {
