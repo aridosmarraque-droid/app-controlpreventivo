@@ -95,21 +95,31 @@ export const AdminDashboard: React.FC = () => {
     const toastId = toast.loading("Ejecutando chequeo en la nube...");
 
     try {
-        const { data, error } = await supabase.functions.invoke('check-inspections');
+        // We pass a 'force' body param, though your function needs to update to read it.
+        // Even without it, this test will confirm if the function is deployable.
+        const { data, error } = await supabase.functions.invoke('check-inspections', {
+            body: { manualTest: true }
+        });
         
-        if (error) throw error;
+        if (error) {
+            // Check for specific error types
+            if (error instanceof Error && error.message.includes("FunctionsFetchError")) {
+                throw new Error("La función no existe o no está desplegada (404/500).");
+            }
+            throw error;
+        }
         
         const count = data?.sent || 0;
         if (count > 0) {
             toast.success(`¡Éxito! Se enviaron ${count} WhatsApps.`, { id: toastId });
         } else {
-            toast.success("Chequeo completado. Ninguna inspección vencida encontrada.", { id: toastId, icon: '👍' });
+            toast.success("Chequeo completado. No hay inspecciones vencidas (o ya se enviaron hoy).", { id: toastId, icon: '👍' });
         }
 
     } catch (e: any) {
         console.error(e);
         toast.error(`Error: ${e.message || 'Fallo al invocar función'}`, { id: toastId });
-        alert("Error invocando la función 'check-inspections'.\n\nAsegúrate de:\n1. Haber hecho 'Deploy' de la función en Supabase.\n2. Haber añadido los Secrets (ULTRAMSG_...).");
+        alert("❌ Error invocando la función 'check-inspections'.\n\nCausas probables:\n1. No has hecho click en 'Deploy' en el editor de Supabase.\n2. No has añadido los Secrets (ULTRAMSG_...).\n3. La función se llama diferente (debe ser check-inspections).");
     } finally {
         setIsRunningCron(false);
     }
@@ -259,7 +269,7 @@ create policy "Public inspections" on inspections for all using (true) with chec
   const edgeFunctionCode = `
 import { createClient } from 'jsr:@supabase/supabase-js@2'
 
-// CONFIGURACIÓN ULTRAMSG (VARIABLES DE ENTORNO RECOMENDADAS)
+// CONFIGURACIÓN ULTRAMSG
 const INSTANCE_ID = Deno.env.get('ULTRAMSG_INSTANCE_ID') || 'instance99999';
 const TOKEN = Deno.env.get('ULTRAMSG_TOKEN') || 'token123456';
 
@@ -272,13 +282,16 @@ const PERIOD_DAYS = {
 
 Deno.serve(async (req) => {
   try {
-    // 1. Conectar a Base de Datos (Service Role para poder escribir sin restricciones)
+    const { manualTest } = await req.json().catch(() => ({ manualTest: false }));
+
+    // 1. Conectar a Base de Datos
     const supabase = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? ''
     );
 
-    // 2. Obtener sitios configurados
+    // 2. Obtener sitios con FECHA DE CREACIÓN
+    // Importante: necesitamos 'created_at' para no alertar sitios nuevos inmediatamente
     const { data: sites, error: siteError } = await supabase.from('sites').select('*');
     if (siteError) throw siteError;
 
@@ -298,20 +311,30 @@ Deno.serve(async (req) => {
         const site = row.data;
         if (!site.periodicity || !site.contactPhone) continue;
 
-        // Verificar cooldown de 7 días
+        // Verificar cooldown de 7 días (Saltar si es Test Manual)
         const lastSent = site.lastReminderSent || 0;
-        if (now - lastSent < (7 * ONE_DAY)) continue;
+        if (!manualTest && (now - lastSent < (7 * ONE_DAY))) {
+             console.log(\`Skipping \${site.name} (Cooldown)\`);
+             continue;
+        }
 
-        // Encontrar última inspección para este sitio
         const lastInsp = inspections.find((i: any) => i.data.siteId === site.id);
         const lastDate = lastInsp ? new Date(lastInsp.date).getTime() : 0;
+        const creationDate = row.created_at ? new Date(row.created_at).getTime() : 0;
         
-        // Calcular días
-        const daysElapsed = (now - lastDate) / ONE_DAY;
+        // CORRECCIÓN INTELIGENTE:
+        // Si nunca se ha inspeccionado (lastDate=0), usamos la fecha de creación como referencia.
+        // Así damos un "periodo de gracia" a los sitios nuevos.
+        const referenceDate = lastDate > 0 ? lastDate : creationDate;
+
+        // Si referenceDate sigue siendo 0 (datos antiguos sin created_at), forzamos overdue
+        // pero solo si ha pasado mucho tiempo
+        const effectiveDate = referenceDate > 0 ? referenceDate : (now - (366 * ONE_DAY)); 
+
+        const daysElapsed = (now - effectiveDate) / ONE_DAY;
         const limit = PERIOD_DAYS[site.periodicity] || 30;
 
         if (daysElapsed >= limit) {
-             // ENVIAR WHATSAPP
              const msg = \`⚠️ *RECORDATORIO DE INSPECCIÓN* ⚠️\\n\\nLa instalación *\${site.name}* requiere una inspección \${site.periodicity}.\\nÚltima inspección: \${lastDate > 0 ? new Date(lastDate).toLocaleDateString() : 'NUNCA'}\\nDías vencidos: \${Math.floor(daysElapsed - limit)}\\n\\nPor favor, acceda a la App para realizarla.\`;
              
              await fetch(\`https://api.ultramsg.com/\${INSTANCE_ID}/messages/chat\`, {
@@ -330,7 +353,8 @@ Deno.serve(async (req) => {
 
     return new Response(JSON.stringify({ sent: sentCount }), { headers: { 'Content-Type': 'application/json' } });
   } catch (err) {
-    return new Response(String(err), { status: 500 });
+    console.error(err);
+    return new Response(JSON.stringify({ error: String(err) }), { status: 500 });
   }
 })
   `.trim();
