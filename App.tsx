@@ -6,7 +6,6 @@ import { AdminDashboard } from './components/AdminDashboard';
 import { InspectionRunner } from './components/InspectionRunner';
 import { InspectionSummary } from './components/InspectionSummary';
 import { InspectionHistory } from './components/InspectionHistory';
-import { notificationService } from './services/notificationService';
 import { Toaster, toast } from 'react-hot-toast';
 import { Menu, X, Settings, ListChecks, History, Wifi, WifiOff, RefreshCw, Lock, User, ArrowRight, Database } from 'lucide-react';
 import { checkSupabaseConfig } from './services/supabaseClient';
@@ -48,12 +47,6 @@ export default function App() {
       window.removeEventListener('offline', handleStatusChange);
     };
   }, [isAuthenticated, isLoadingData]);
-
-  useEffect(() => {
-    if (isAuthenticated && !isLoadingData && isOnline) {
-       notificationService.checkAndNotifyDueInspections();
-    }
-  }, [isAuthenticated, isLoadingData, isOnline]);
 
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
