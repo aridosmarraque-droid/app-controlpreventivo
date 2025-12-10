@@ -3,7 +3,7 @@ import { Site, Area, InspectionPoint, Periodicity } from '../types';
 import { storageService } from '../services/storageService';
 import { geminiService } from '../services/geminiService';
 import { checkSupabaseConfig, supabase } from '../services/supabaseClient';
-import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock, Bot, Terminal } from 'lucide-react';
+import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock, Bot, Terminal, Key, Clock } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 // Simple UUID generator fallback
@@ -17,6 +17,7 @@ export const AdminDashboard: React.FC = () => {
   const [showCronGuide, setShowCronGuide] = useState(false);
   const [hasCopiedSql, setHasCopiedSql] = useState(false);
   const [hasCopiedCron, setHasCopiedCron] = useState(false);
+  const [hasCopiedCronSql, setHasCopiedCronSql] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
 
   useEffect(() => {
@@ -301,6 +302,29 @@ Deno.serve(async (req) => {
     return new Response(String(err), { status: 500 });
   }
 })
+  `.trim();
+  
+  const cronSqlCode = `
+-- ACTIVAR CRON DESDE BASE DE DATOS (PLAN B)
+-- Ejecuta esto en SQL Editor si no encuentras el botón Schedule en la función.
+
+-- 1. Habilitar extensiones necesarias
+create extension if not exists pg_cron;
+create extension if not exists pg_net;
+
+-- 2. Crear el trabajo programado (ejecuta a las 8:00 AM)
+-- REEMPLAZA <TU_PROYECTO> Y <TU_ANON_KEY>
+select cron.schedule(
+  'check-inspections-daily',
+  '0 8 * * *',
+  $$
+  select
+    net.http_post(
+        url:='https://<TU_PROYECTO>.supabase.co/functions/v1/check-inspections',
+        headers:='{"Content-Type": "application/json", "Authorization": "Bearer <TU_ANON_KEY>"}'::jsonb
+    ) as request_id;
+  $$
+);
   `.trim();
 
   const copyToClipboard = (text: string, setFn: (v: boolean) => void) => {
@@ -633,21 +657,20 @@ Deno.serve(async (req) => {
          
          {showCronGuide && (
              <div className="p-4 bg-indigo-50 text-sm space-y-4 animate-in slide-in-from-top-2">
-                 <div className="p-3 bg-white border border-indigo-200 rounded-lg text-slate-600">
+                 <div className="p-3 bg-white border border-indigo-200 rounded-lg text-slate-600 text-xs">
                      Esta función ejecutará una comprobación <strong>cada mañana</strong> en el servidor de Supabase. 
                      Si encuentra una cantera con inspección vencida, enviará un WhatsApp automáticamente vía UltraMsg.
                  </div>
 
-                 <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-4">
-                     <Terminal className="w-4 h-4" /> Pasos de Instalación
+                 <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-4 border-b border-indigo-200 pb-1">
+                     <Terminal className="w-4 h-4" /> 1. Código de la Función
                  </h4>
                  
                  <ol className="list-decimal pl-4 space-y-3 text-slate-700">
-                    <li>Ve a <strong>Edge Functions</strong> en tu proyecto de Supabase.</li>
-                    <li>Crea una nueva función llamada <code>check-inspections</code>.</li>
-                    <li>Copia y pega este código TypeScript/Deno:
+                    <li>Ve a <strong>Edge Functions</strong> en Supabase y crea <code>check-inspections</code>.</li>
+                    <li>Copia este código y pégalo en el editor:
                         <div className="relative mt-2">
-                            <pre className="bg-slate-900 text-slate-200 p-3 rounded-lg text-xs overflow-x-auto h-48">
+                            <pre className="bg-slate-900 text-slate-200 p-3 rounded-lg text-xs overflow-x-auto h-32">
                                 {edgeFunctionCode}
                             </pre>
                             <button 
@@ -659,19 +682,41 @@ Deno.serve(async (req) => {
                             </button>
                         </div>
                     </li>
-                    <li>
-                        En la configuración de la función (Settings), añade estas <strong>Variables de Entorno</strong>:
-                        <ul className="list-disc pl-4 mt-1 text-xs font-mono bg-white p-2 rounded border border-indigo-100">
-                            <li>ULTRAMSG_INSTANCE_ID = (tu id)</li>
-                            <li>ULTRAMSG_TOKEN = (tu token)</li>
-                        </ul>
-                    </li>
-                    <li>
-                        Finalmente, activa el <strong>Cron Schedule</strong> en los detalles de la función. <br/>
-                        Ejemplo de expresión cron para las 8:00 AM todos los días: <br/>
-                        <code className="bg-slate-200 px-1 rounded font-bold">0 8 * * *</code>
-                    </li>
                  </ol>
+
+                 <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-6 border-b border-indigo-200 pb-1">
+                     <Key className="w-4 h-4" /> 2. Configurar Variables (Secrets)
+                 </h4>
+                 <div className="text-xs text-slate-600 space-y-2 mt-2">
+                     <p>Las claves de UltraMsg NO van en el código. Se configuran en los ajustes globales del proyecto:</p>
+                     <ul className="list-disc pl-5 space-y-1">
+                         <li>Ve al menú principal izquierdo (la barra gris oscura lateral).</li>
+                         <li>Pulsa el icono de engranaje ⚙️ (<strong>Project Settings</strong>) abajo del todo.</li>
+                         <li>Selecciona <strong>Edge Functions</strong> en la lista.</li>
+                         <li>Desactiva "Enforce JWT" (recomendado para Crons simples) o déjalo activo si sabes configurarlo.</li>
+                         <li>Busca el botón <strong>"Add new secret"</strong>.</li>
+                         <li>Añade <code>ULTRAMSG_INSTANCE_ID</code> y <code>ULTRAMSG_TOKEN</code> con tus valores reales.</li>
+                     </ul>
+                 </div>
+
+                 <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-6 border-b border-indigo-200 pb-1">
+                     <Clock className="w-4 h-4" /> 3. Activar Horario (Cron)
+                 </h4>
+                 <div className="text-xs text-slate-600 space-y-2 mt-2">
+                     <p>Si no ves la opción "Schedule" en los detalles de la función, usa el <strong>SQL Editor</strong> para forzar la ejecución diaria:</p>
+                     <div className="relative mt-2">
+                        <pre className="bg-slate-800 text-yellow-50 p-3 rounded-lg text-xs overflow-x-auto">
+                            {cronSqlCode}
+                        </pre>
+                        <button 
+                            onClick={() => copyToClipboard(cronSqlCode, setHasCopiedCronSql)}
+                            className="absolute top-2 right-2 p-1 bg-white/10 hover:bg-white/20 rounded text-white"
+                            title="Copiar SQL Cron"
+                        >
+                            {hasCopiedCronSql ? <Check className="w-4 h-4" /> : <Copy className="w-4 h-4" />}
+                        </button>
+                     </div>
+                 </div>
              </div>
          )}
       </div>
