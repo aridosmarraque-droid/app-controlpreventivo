@@ -3,7 +3,7 @@ import { Site, Area, InspectionPoint, Periodicity } from '../types';
 import { storageService } from '../services/storageService';
 import { geminiService } from '../services/geminiService';
 import { checkSupabaseConfig, supabase } from '../services/supabaseClient';
-import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock, Bot, Terminal, Key, Clock } from 'lucide-react';
+import { Plus, Trash2, Save, Sparkles, X, Settings, ArrowUp, ArrowDown, Database, Copy, Check, Briefcase, RefreshCw, AlertTriangle, Phone, CalendarClock, Bot, Terminal, Key, Clock, Play, Send } from 'lucide-react';
 import { toast } from 'react-hot-toast';
 
 // Simple UUID generator fallback
@@ -19,6 +19,7 @@ export const AdminDashboard: React.FC = () => {
   const [hasCopiedCron, setHasCopiedCron] = useState(false);
   const [hasCopiedCronSql, setHasCopiedCronSql] = useState(false);
   const [isTestingConnection, setIsTestingConnection] = useState(false);
+  const [isRunningCron, setIsRunningCron] = useState(false);
 
   useEffect(() => {
     setSites(storageService.getSites());
@@ -81,6 +82,36 @@ export const AdminDashboard: React.FC = () => {
       alert(`❌ Error de Conexión:\n\n${e.message}\n\nRevisa que has ejecutado el script SQL en Supabase para crear las tablas.`);
     } finally {
       setIsTestingConnection(false);
+    }
+  };
+
+  const handleManualCronRun = async () => {
+    if (!checkSupabaseConfig() || !supabase) {
+        toast.error("No hay conexión con Supabase");
+        return;
+    }
+
+    setIsRunningCron(true);
+    const toastId = toast.loading("Ejecutando chequeo en la nube...");
+
+    try {
+        const { data, error } = await supabase.functions.invoke('check-inspections');
+        
+        if (error) throw error;
+        
+        const count = data?.sent || 0;
+        if (count > 0) {
+            toast.success(`¡Éxito! Se enviaron ${count} WhatsApps.`, { id: toastId });
+        } else {
+            toast.success("Chequeo completado. Ninguna inspección vencida encontrada.", { id: toastId, icon: '👍' });
+        }
+
+    } catch (e: any) {
+        console.error(e);
+        toast.error(`Error: ${e.message || 'Fallo al invocar función'}`, { id: toastId });
+        alert("Error invocando la función 'check-inspections'.\n\nAsegúrate de:\n1. Haber hecho 'Deploy' de la función en Supabase.\n2. Haber añadido los Secrets (ULTRAMSG_...).");
+    } finally {
+        setIsRunningCron(false);
     }
   };
 
@@ -657,9 +688,22 @@ select cron.schedule(
          
          {showCronGuide && (
              <div className="p-4 bg-indigo-50 text-sm space-y-4 animate-in slide-in-from-top-2">
-                 <div className="p-3 bg-white border border-indigo-200 rounded-lg text-slate-600 text-xs">
-                     Esta función ejecutará una comprobación <strong>cada mañana</strong> en el servidor de Supabase. 
-                     Si encuentra una cantera con inspección vencida, enviará un WhatsApp automáticamente vía UltraMsg.
+                 <div className="flex justify-between items-center mb-4">
+                     <p className="text-xs text-slate-600 max-w-[70%]">
+                        Ejecuta una comprobación diaria (08:00 UTC) para detectar inspecciones vencidas.
+                     </p>
+                     
+                     {/* MANUAL TRIGGER BUTTON */}
+                     {checkSupabaseConfig() && (
+                       <button 
+                         onClick={handleManualCronRun}
+                         disabled={isRunningCron}
+                         className="px-3 py-2 bg-indigo-600 text-white rounded-lg text-xs font-bold flex items-center gap-2 shadow-md hover:bg-indigo-700 active:scale-95 disabled:opacity-50 transition-all"
+                       >
+                         {isRunningCron ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Play className="w-3 h-3" />}
+                         Ejecutar Ahora (Test Manual)
+                       </button>
+                     )}
                  </div>
 
                  <h4 className="font-bold text-indigo-900 flex items-center gap-2 mt-4 border-b border-indigo-200 pb-1">
